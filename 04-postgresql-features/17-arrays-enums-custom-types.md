@@ -1,1 +1,962 @@
-# Lesson 17 — Arrays, ENUMs & Custom Types\n\n## First Understand Why These Features Exist\n\nPostgreSQL gives us more data-modeling choices than only numbers, text, and JSONB.\n\nThree useful features are:\n\n~~~text\nARRAY\n→ store multiple values of the same type\n\nENUM\n→ restrict a value to a fixed named set\n\nCUSTOM TYPES / DOMAINS\n→ define reusable database-specific types/rules\n~~~\n\nThe important skill is not only knowing the syntax. You should know **when to use each one and when not to use it**.\n\n---\n\n# 1. PostgreSQL Arrays\n\nAn ARRAY lets one column contain multiple values of the same PostgreSQL type.\n\nExample:\n\n~~~sql\nCREATE TABLE products (\n    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n    name TEXT NOT NULL,\n    tags TEXT[]\n);\n~~~\n\nInsert:\n\n~~~sql\nINSERT INTO products (name, tags)\nVALUES (\n    'Gaming Laptop',\n    ARRAY['gaming', 'laptop', 'electronics']\n);\n~~~\n\nConceptually:\n\n~~~text\nproduct\n  │\n  └── tags\n       ├── gaming\n       ├── laptop\n       └── electronics\n~~~\n\nAll elements belong to the declared array type.\n\n---\n\n# 2. Array Syntax\n\nYou can declare an array with:\n\n~~~sql\ntags TEXT[]\n~~~\n\nOther examples:\n\n~~~sql\nscores INTEGER[]\nprices NUMERIC[]\nids UUID[]\n~~~\n\nCreate array values using:\n\n~~~sql\nARRAY['red', 'blue', 'black']\n~~~\n\nor PostgreSQL array literal syntax when appropriate.\n\n---\n\n# 3. Accessing Array Elements\n\nPostgreSQL arrays normally use **1-based indexing**.\n\nSuppose:\n\n~~~text\ntags = ['gaming', 'laptop', 'electronics']\n~~~\n\nThen:\n\n~~~sql\nSELECT tags[1]\nFROM products;\n~~~\n\nreturns the first element.\n\nThis differs from JavaScript:\n\n~~~text\nJavaScript array\n→ first index = 0\n\nPostgreSQL array\n→ first index normally = 1\n~~~\n\nThis is a useful interview/detail point.\n\n---\n\n# 4. Searching Arrays with ANY\n\nSuppose:\n\n~~~text\ntags = ['gaming', 'laptop', 'electronics']\n~~~\n\nFind products containing `gaming`:\n\n~~~sql\nSELECT *\nFROM products\nWHERE 'gaming' = ANY(tags);\n~~~\n\nRead it as:\n\n> Is `gaming` equal to any element inside `tags`?\n\n---\n\n# 5. Array Containment with @>\n\nPostgreSQL arrays support containment operators too.\n\n~~~sql\nSELECT *\nFROM products\nWHERE tags @> ARRAY['gaming'];\n~~~\n\nMeaning:\n\n~~~text\nDoes tags contain 'gaming'?\n~~~\n\nMultiple required values:\n\n~~~sql\nSELECT *\nFROM products\nWHERE tags @> ARRAY['gaming', 'electronics'];\n~~~\n\nThe row matches when the array contains the requested values.\n\n---\n\n# 6. Adding Values to an Array\n\nOne approach is `array_append()`.\n\n~~~sql\nUPDATE products\nSET tags = array_append(tags, 'featured')\nWHERE id = 1;\n~~~\n\nConceptually:\n\n~~~text\nbefore\n['gaming', 'laptop']\n\nappend featured\n       ↓\n\nafter\n['gaming', 'laptop', 'featured']\n~~~\n\nYou can also concatenate arrays with PostgreSQL array operators.\n\n---\n\n# 7. Removing an Array Value\n\n~~~sql\nUPDATE products\nSET tags = array_remove(tags, 'featured')\nWHERE id = 1;\n~~~\n\nThis removes matching occurrences of that value from the array.\n\n---\n\n# 8. When Arrays Are Useful\n\nArrays can be useful for a **small, simple collection of homogeneous values that naturally belongs to one row**.\n\nExamples might include:\n\n~~~text\nsimple tags\nsmall sets of flags/labels\nsome stored measurements or simple value collections\n~~~\n\nBut you must ask an important question:\n\n> Are these just values, or are they actually separate entities/relationships?\n\n---\n\n# 9. When NOT to Use an Array\n\nSuppose an order contains products.\n\nBad design:\n\n~~~sql\nproduct_ids BIGINT[]\n~~~\n\nWhy?\n\nBecause products are real entities with relationships.\n\nYou may need:\n\n~~~text\nquantity\nprice_at_order\ndiscount\nforeign-key integrity\nproduct-level querying\n~~~\n\nUse a junction table instead:\n\n~~~text\norders\n   │\n   │ 1:N\n   ▼\norder_items\n   ▲\n   │ N:1\n   │\nproducts\n~~~\n\n### Important Rule\n\n~~~text\nSimple collection of values\n→ ARRAY may be useful\n\nReal entities / relationships\n→ separate table + PK/FK\n~~~\n\n---\n\n# 10. Array Indexing\n\nPostgreSQL can use GIN indexes for useful array search patterns.\n\n~~~sql\nCREATE INDEX idx_products_tags\nON products\nUSING GIN (tags);\n~~~\n\nThis may help supported queries such as containment searches on large datasets.\n\nRemember from Lesson 16:\n\n~~~text\nGIN\n→ useful when one stored value contains multiple searchable elements\n~~~\n\nDo not add indexes blindly. Measure your actual queries.\n\n---\n\n# 11. What Is an ENUM?\n\nENUM stands for **enumerated type**.\n\nIt defines a fixed named set of allowed values.\n\nExample order statuses:\n\n~~~text\npending\npaid\nshipped\ncancelled\n~~~\n\nCreate the type:\n\n~~~sql\nCREATE TYPE order_status AS ENUM (\n    'pending',\n    'paid',\n    'shipped',\n    'cancelled'\n);\n~~~\n\nUse it:\n\n~~~sql\nCREATE TABLE orders (\n    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n    status order_status NOT NULL DEFAULT 'pending'\n);\n~~~\n\nNow PostgreSQL understands `order_status` as its own type.\n\n---\n\n# 12. Why ENUM Can Be Useful\n\nWithout a rule, a text column could accidentally receive:\n\n~~~text\npaid\nPaid\nPAID\npayment_done\nabc\n~~~\n\nAn ENUM limits values to the defined set.\n\n~~~text\nApplication sends status\n        ↓\nPostgreSQL ENUM\n        ↓\nAllowed?\n  ├── yes → store\n  └── no  → reject\n~~~\n\nThis gives strong database-level validation.\n\n---\n\n# 13. ENUM vs CHECK Constraint\n\nYou already learned another way to restrict values:\n\n~~~sql\nstatus TEXT NOT NULL\nCHECK (status IN ('pending', 'paid', 'shipped', 'cancelled'))\n~~~\n\nSo when should you use ENUM?\n\nBoth approaches are valid, but they have different tradeoffs.\n\n~~~text\nENUM\n→ dedicated PostgreSQL type\n→ reusable as that type\n→ strong semantic meaning\n→ good when values are stable\n\nTEXT + CHECK\n→ ordinary text column\n→ constraint controls allowed values\n→ often easier to evolve with normal constraint migrations\n~~~\n\nDo not memorize that one is always better.\n\nAsk how stable the business values are and how you expect the schema to evolve.\n\n---\n\n# 14. When ENUM Is a Good Fit\n\nENUM can be a good choice when values are:\n\n~~~text\nsmall\nwell-defined\nstable\nmeaningful as one domain/type\n~~~\n\nExample:\n\n~~~text\norder status\naccount state\nsmall stable workflow states\n~~~\n\nHowever, if business users frequently add/remove/reorder configurable values, a lookup table may be more appropriate.\n\n---\n\n# 15. ENUM vs Lookup Table\n\nSuppose product categories are:\n\n~~~text\nElectronics\nClothing\nBooks\nFurniture\n...\n~~~\n\nShould category be an ENUM?\n\nUsually not if categories are business data that can be created, renamed, disabled, or have additional attributes.\n\nA table is more flexible:\n\n~~~sql\nCREATE TABLE categories (\n    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n    name TEXT UNIQUE NOT NULL,\n    is_active BOOLEAN NOT NULL DEFAULT true\n);\n~~~\n\nThen:\n\n~~~sql\nproducts.category_id\nREFERENCES categories(id)\n~~~\n\nDecision:\n\n~~~text\nSmall stable predefined set\n→ ENUM may fit\n\nDynamic business-managed set\n→ lookup/reference table often fits better\n~~~\n\n---\n\n# 16. Changing ENUM Values — High Level\n\nPostgreSQL lets you evolve ENUM types, for example by adding values.\n\n~~~sql\nALTER TYPE order_status\nADD VALUE 'refunded';\n~~~\n\nBut schema evolution around ENUMs can be less flexible than updating rows in a lookup table.\n\nThis is one reason you should reserve ENUM for genuinely stable domains.\n\n---\n\n# 17. What Are Custom Types?\n\nPostgreSQL lets you define your own types.\n\nENUM itself is one type of user-defined type.\n\nAnother useful concept is a **composite type**.\n\nExample:\n\n~~~sql\nCREATE TYPE address AS (\n    street TEXT,\n    city TEXT,\n    postal_code TEXT\n);\n~~~\n\nNow `address` represents a structured value.\n\nConceptually:\n\n~~~text\naddress\n ├── street\n ├── city\n └── postal_code\n~~~\n\nPostgreSQL's type system is powerful, but custom composite types are not something you need for every application table.\n\nOften, normal tables and columns remain simpler.\n\n---\n\n# 18. Composite Type vs Table\n\nA composite type describes a structured **value**.\n\nA table represents stored **entities/rows** and can have:\n\n~~~text\nprimary keys\nforeign keys\nindexes\nconstraints\nrelationships\nindependent lifecycle\n~~~\n\nSo do not use a composite type simply to avoid creating a table.\n\nExample:\n\n~~~text\nCustomer address snapshot inside another value\n→ composite type may sometimes fit\n\nAddresses as independently managed entities\n→ table may be more appropriate\n~~~\n\nThe correct choice depends on the data model.\n\n---\n\n# 19. DOMAIN — Reusable Constrained Type\n\nAnother PostgreSQL feature is a **domain**.\n\nA domain creates a reusable type based on an existing type plus rules.\n\nExample:\n\n~~~sql\nCREATE DOMAIN positive_money AS NUMERIC(12, 2)\nCHECK (VALUE >= 0);\n~~~\n\nUse it:\n\n~~~sql\nCREATE TABLE products (\n    id BIGINT PRIMARY KEY,\n    price positive_money NOT NULL\n);\n~~~\n\nNow the rule:\n\n~~~text\nvalue must be >= 0\n~~~\n\nis part of the reusable domain.\n\n---\n\n# 20. Why DOMAIN Can Be Useful\n\nImagine many tables contain monetary values that follow the same rule.\n\nWithout a domain:\n\n~~~sql\nprice NUMERIC(12,2) CHECK (price >= 0)\nshipping NUMERIC(12,2) CHECK (shipping >= 0)\nfee NUMERIC(12,2) CHECK (fee >= 0)\n~~~\n\nA domain can centralize a reusable value rule.\n\nMental model:\n\n~~~text\nBase PostgreSQL type\n        +\nreusable constraint\n        ↓\nDOMAIN\n~~~\n\nDo not create domains for every tiny validation rule. Use them when a reusable semantic data type genuinely improves the schema.\n\n---\n\n# 21. DOMAIN vs ENUM\n\nThese solve different problems.\n\n~~~text\nENUM\n→ value must be one of a named fixed set\n\nDOMAIN\n→ value is based on another type and must satisfy reusable rules\n~~~\n\nExample:\n\n~~~text\norder_status ENUM\n→ pending / paid / shipped / cancelled\n\npositive_money DOMAIN\n→ NUMERIC value >= 0\n~~~\n\n---\n\n# 22. ARRAY vs JSONB\n\nThis is an important design decision.\n\nSuppose you need tags:\n\n~~~text\ngaming\nlaptop\nfeatured\n~~~\n\nAn array can be natural:\n\n~~~sql\ntags TEXT[]\n~~~\n\nBut suppose each product has flexible structured attributes:\n\n~~~json\n{\n  "ram": "16GB",\n  "storage": "1TB",\n  "processor": "Intel i7"\n}\n~~~\n\nJSONB is more natural.\n\n~~~text\nARRAY\n→ multiple values of the same type\n\nJSONB\n→ flexible key/value or nested structure\n~~~\n\n---\n\n# 23. ARRAY vs Separate Table\n\nSuppose users can have roles.\n\nYou could store:\n\n~~~text\nroles = ['admin', 'editor']\n~~~\n\nBut if roles have their own:\n\n~~~text\nid\nname\npermissions\ndescription\ncreated_at\n~~~\n\nthen roles are entities.\n\nUse:\n\n~~~text\nusers\n  │\n  ▼\nuser_roles\n  ▲\n  │\nroles\n~~~\n\nAgain:\n\n~~~text\nsimple values\n→ ARRAY can fit\n\nreal entities\n→ table\n~~~\n\n---\n\n# 24. ENUM vs JSONB\n\nThese are usually solving completely different problems.\n\n~~~text\nENUM\n→ one value from a fixed allowed set\n\nJSONB\n→ flexible structured document\n~~~\n\nExample:\n\n~~~sql\nstatus order_status\n~~~\n\nvs:\n\n~~~sql\nattributes JSONB\n~~~\n\nDo not use JSONB merely to avoid defining a simple stable status column.\n\n---\n\n# 25. The Most Important Decision Table\n\n~~~text\nRequirement                         Better starting choice\n--------------------------------------------------------------\nOne normal scalar value             Normal column\nSeveral same-type simple values     ARRAY\nOne value from stable fixed set     ENUM or CHECK\nFlexible nested attributes          JSONB\nReusable constrained scalar type    DOMAIN\nStructured reusable value           Composite type\nReal entity / relationship          TABLE + PK/FK\n~~~\n\nThis table is more important than memorizing every PostgreSQL function.\n\n---\n\n# 26. Practical ShopHub Example\n\nA product might use several PostgreSQL features together:\n\n~~~sql\nCREATE TYPE product_state AS ENUM (\n    'draft',\n    'active',\n    'archived'\n);\n\nCREATE TABLE products (\n    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n    category_id BIGINT NOT NULL REFERENCES categories(id),\n    name TEXT NOT NULL,\n    state product_state NOT NULL DEFAULT 'draft',\n    tags TEXT[] NOT NULL DEFAULT '{}',\n    attributes JSONB NOT NULL DEFAULT '{}'::jsonb,\n    price NUMERIC(12,2) NOT NULL CHECK (price >= 0)\n);\n~~~\n\nMeaning:\n\n~~~text\ncategory_id\n→ real relationship → foreign key\n\nstate\n→ small stable set → ENUM\n\ntags\n→ simple same-type values → ARRAY\n\nattributes\n→ flexible structured metadata → JSONB\n\nprice\n→ stable scalar → normal NUMERIC column\n~~~\n\nThis is the kind of decision-making that matters in production database design.\n\n---\n\n# 27. Common Mistakes\n\n## Mistake 1 — Using Arrays for Real Relationships\n\nBad:\n\n~~~text\norder.product_ids BIGINT[]\n~~~\n\nBetter:\n\n~~~text\norder_items table\n~~~\n\nwhen products are real entities in a many-to-many relationship.\n\n## Mistake 2 — Using ENUM for Dynamic Business Data\n\nIf admins constantly add and manage values, a lookup table may be easier to evolve.\n\n## Mistake 3 — Using JSONB for a Simple Fixed Status\n\nIf status is just one stable value, a normal typed column with ENUM/CHECK is clearer.\n\n## Mistake 4 — Creating Custom Types Everywhere\n\nPostgreSQL supports powerful types, but simpler schemas are often easier to maintain.\n\n## Mistake 5 — Forgetting PostgreSQL Array Indexing\n\nPostgreSQL arrays normally start at index 1, unlike JavaScript arrays.\n\n## Mistake 6 — Assuming GIN Makes Every Array Query Fast\n\nIndex usefulness depends on query operators, selectivity, table size, and planner decisions.\n\n---\n\n# Interview Revision\n\n## What is a PostgreSQL ARRAY?\n\nA column type that can store multiple values of the same underlying PostgreSQL type.\n\n## What index does a PostgreSQL array normally start from?\n\nNormally 1.\n\n## How can you check whether a value is in an array?\n\nOne common approach is `value = ANY(array_column)`.\n\n## What is an ENUM?\n\nA user-defined PostgreSQL type containing a predefined set of named values.\n\n## ENUM vs CHECK?\n\nENUM creates a dedicated type for a stable value set. CHECK keeps a normal column type and applies a constraint. Both can enforce allowed values and have different schema-evolution tradeoffs.\n\n## ENUM vs lookup table?\n\nUse ENUM for small stable predefined sets. A lookup table is often better when values are dynamic business data with their own attributes/lifecycle.\n\n## What is a DOMAIN?\n\nA reusable user-defined type based on an existing PostgreSQL type with optional constraints.\n\n## What is a composite type?\n\nA PostgreSQL user-defined structured value containing multiple named fields.\n\n## ARRAY vs JSONB?\n\nARRAY is suited to multiple homogeneous values. JSONB is suited to flexible key/value and nested structures.\n\n## ARRAY vs table?\n\nUse arrays for simple values. Use tables when items are real entities or relationships requiring keys, constraints, attributes, and independent querying.\n\n---\n\n# Quick Revision\n\n~~~text\nARRAY\n→ many same-type values\n\nENUM\n→ one value from fixed named set\n\nDOMAIN\n→ reusable base type + rule\n\nCOMPOSITE TYPE\n→ reusable structured value\n\nJSONB\n→ flexible nested/key-value data\n\nTABLE\n→ real entities and relationships\n~~~\n\n### Important Array Concepts\n\n~~~text\nPostgreSQL array index\n→ normally starts at 1\n\nANY\n→ compare against array elements\n\n@>\n→ containment\n\narray_append\n→ add element\n\narray_remove\n→ remove matching element\n\nGIN\n→ common index option for supported array searches\n~~~\n\n### Most Important Design Rule\n\n~~~text\nIs it a simple collection?\n→ ARRAY may fit\n\nIs it a stable fixed choice?\n→ ENUM/CHECK may fit\n\nIs it flexible structured metadata?\n→ JSONB may fit\n\nIs it a real entity or relationship?\n→ TABLE + PK/FK\n~~~\n\n---\n\n## Key Takeaway\n> **PostgreSQL gives you ARRAY, ENUM, DOMAIN, composite types, JSONB, and relational tables for different modeling problems. The important skill is choosing the simplest type that correctly represents the meaning and lifecycle of the data.**\n\n---\n\n[← Previous: Lesson 16 — JSON & JSONB](./16-json-and-jsonb.md) | [Back to Roadmap](../README.md) | [Next: Lesson 18 — Views & Materialized Views →](./18-views-and-materialized-views.md)
+# Lesson 17 — Arrays, ENUMs & Custom Types
+
+## First Understand Why These Features Exist
+
+PostgreSQL gives us more data-modeling choices than only numbers, text, and JSONB.
+
+Three useful features are:
+
+~~~text
+ARRAY
+→ store multiple values of the same type
+
+ENUM
+→ restrict a value to a fixed named set
+
+CUSTOM TYPES / DOMAINS
+→ define reusable database-specific types/rules
+~~~
+
+The important skill is not only knowing the syntax. You should know **when to use each one and when not to use it**.
+
+---
+
+## 1. PostgreSQL Arrays
+
+An ARRAY lets one column contain multiple values of the same PostgreSQL type.
+
+Example:
+
+~~~sql
+CREATE TABLE products (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    name TEXT NOT NULL,
+    tags TEXT[]
+);
+~~~
+
+Insert:
+
+~~~sql
+INSERT INTO products (name, tags)
+VALUES (
+    'Gaming Laptop',
+    ARRAY['gaming', 'laptop', 'electronics']
+);
+~~~
+
+Conceptually:
+
+~~~text
+product
+  │
+  └── tags
+       ├── gaming
+       ├── laptop
+       └── electronics
+~~~
+
+All elements belong to the declared array type.
+
+---
+
+## 2. Array Syntax
+
+You can declare an array with:
+
+~~~sql
+tags TEXT[]
+~~~
+
+Other examples:
+
+~~~sql
+scores INTEGER[]
+prices NUMERIC[]
+ids UUID[]
+~~~
+
+Create array values using:
+
+~~~sql
+ARRAY['red', 'blue', 'black']
+~~~
+
+or PostgreSQL array literal syntax when appropriate.
+
+---
+
+## 3. Accessing Array Elements
+
+PostgreSQL arrays normally use **1-based indexing**.
+
+Suppose:
+
+~~~text
+tags = ['gaming', 'laptop', 'electronics']
+~~~
+
+Then:
+
+~~~sql
+SELECT tags[1]
+FROM products;
+~~~
+
+returns the first element.
+
+This differs from JavaScript:
+
+~~~text
+JavaScript array
+→ first index = 0
+
+PostgreSQL array
+→ first index normally = 1
+~~~
+
+This is a useful interview/detail point.
+
+---
+
+## 4. Searching Arrays with ANY
+
+Suppose:
+
+~~~text
+tags = ['gaming', 'laptop', 'electronics']
+~~~
+
+Find products containing `gaming`:
+
+~~~sql
+SELECT *
+FROM products
+WHERE 'gaming' = ANY(tags);
+~~~
+
+Read it as:
+
+> Is `gaming` equal to any element inside `tags`?
+
+---
+
+## 5. Array Containment with @>
+
+PostgreSQL arrays support containment operators too.
+
+~~~sql
+SELECT *
+FROM products
+WHERE tags @> ARRAY['gaming'];
+~~~
+
+Meaning:
+
+~~~text
+Does tags contain 'gaming'?
+~~~
+
+Multiple required values:
+
+~~~sql
+SELECT *
+FROM products
+WHERE tags @> ARRAY['gaming', 'electronics'];
+~~~
+
+The row matches when the array contains the requested values.
+
+---
+
+## 6. Adding Values to an Array
+
+One approach is `array_append()`.
+
+~~~sql
+UPDATE products
+SET tags = array_append(tags, 'featured')
+WHERE id = 1;
+~~~
+
+Conceptually:
+
+~~~text
+before
+['gaming', 'laptop']
+
+append featured
+       ↓
+
+after
+['gaming', 'laptop', 'featured']
+~~~
+
+You can also concatenate arrays with PostgreSQL array operators.
+
+---
+
+## 7. Removing an Array Value
+
+~~~sql
+UPDATE products
+SET tags = array_remove(tags, 'featured')
+WHERE id = 1;
+~~~
+
+This removes matching occurrences of that value from the array.
+
+---
+
+## 8. When Arrays Are Useful
+
+Arrays can be useful for a **small, simple collection of homogeneous values that naturally belongs to one row**.
+
+Examples might include:
+
+~~~text
+simple tags
+small sets of flags/labels
+some stored measurements or simple value collections
+~~~
+
+But you must ask an important question:
+
+> Are these just values, or are they actually separate entities/relationships?
+
+---
+
+## 9. When NOT to Use an Array
+
+Suppose an order contains products.
+
+Bad design:
+
+~~~sql
+product_ids BIGINT[]
+~~~
+
+Why?
+
+Because products are real entities with relationships.
+
+You may need:
+
+~~~text
+quantity
+price_at_order
+discount
+foreign-key integrity
+product-level querying
+~~~
+
+Use a junction table instead:
+
+~~~text
+orders
+   │
+   │ 1:N
+   ▼
+order_items
+   ▲
+   │ N:1
+   │
+products
+~~~
+
+### Important Rule
+
+~~~text
+Simple collection of values
+→ ARRAY may be useful
+
+Real entities / relationships
+→ separate table + PK/FK
+~~~
+
+---
+
+## 10. Array Indexing
+
+PostgreSQL can use GIN indexes for useful array search patterns.
+
+~~~sql
+CREATE INDEX idx_products_tags
+ON products
+USING GIN (tags);
+~~~
+
+This may help supported queries such as containment searches on large datasets.
+
+Remember from Lesson 16:
+
+~~~text
+GIN
+→ useful when one stored value contains multiple searchable elements
+~~~
+
+Do not add indexes blindly. Measure your actual queries.
+
+---
+
+## 11. What Is an ENUM?
+
+ENUM stands for **enumerated type**.
+
+It defines a fixed named set of allowed values.
+
+Example order statuses:
+
+~~~text
+pending
+paid
+shipped
+cancelled
+~~~
+
+Create the type:
+
+~~~sql
+CREATE TYPE order_status AS ENUM (
+    'pending',
+    'paid',
+    'shipped',
+    'cancelled'
+);
+~~~
+
+Use it:
+
+~~~sql
+CREATE TABLE orders (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    status order_status NOT NULL DEFAULT 'pending'
+);
+~~~
+
+Now PostgreSQL understands `order_status` as its own type.
+
+---
+
+## 12. Why ENUM Can Be Useful
+
+Without a rule, a text column could accidentally receive:
+
+~~~text
+paid
+Paid
+PAID
+payment_done
+abc
+~~~
+
+An ENUM limits values to the defined set.
+
+~~~text
+Application sends status
+        ↓
+PostgreSQL ENUM
+        ↓
+Allowed?
+  ├── yes → store
+  └── no  → reject
+~~~
+
+This gives strong database-level validation.
+
+---
+
+## 13. ENUM vs CHECK Constraint
+
+You already learned another way to restrict values:
+
+~~~sql
+status TEXT NOT NULL
+CHECK (status IN ('pending', 'paid', 'shipped', 'cancelled'))
+~~~
+
+So when should you use ENUM?
+
+Both approaches are valid, but they have different tradeoffs.
+
+~~~text
+ENUM
+→ dedicated PostgreSQL type
+→ reusable as that type
+→ strong semantic meaning
+→ good when values are stable
+
+TEXT + CHECK
+→ ordinary text column
+→ constraint controls allowed values
+→ often easier to evolve with normal constraint migrations
+~~~
+
+Do not memorize that one is always better.
+
+Ask how stable the business values are and how you expect the schema to evolve.
+
+---
+
+## 14. When ENUM Is a Good Fit
+
+ENUM can be a good choice when values are:
+
+~~~text
+small
+well-defined
+stable
+meaningful as one domain/type
+~~~
+
+Example:
+
+~~~text
+order status
+account state
+small stable workflow states
+~~~
+
+However, if business users frequently add/remove/reorder configurable values, a lookup table may be more appropriate.
+
+---
+
+## 15. ENUM vs Lookup Table
+
+Suppose product categories are:
+
+~~~text
+Electronics
+Clothing
+Books
+Furniture
+...
+~~~
+
+Should category be an ENUM?
+
+Usually not if categories are business data that can be created, renamed, disabled, or have additional attributes.
+
+A table is more flexible:
+
+~~~sql
+CREATE TABLE categories (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    name TEXT UNIQUE NOT NULL,
+    is_active BOOLEAN NOT NULL DEFAULT true
+);
+~~~
+
+Then:
+
+~~~sql
+products.category_id
+REFERENCES categories(id)
+~~~
+
+Decision:
+
+~~~text
+Small stable predefined set
+→ ENUM may fit
+
+Dynamic business-managed set
+→ lookup/reference table often fits better
+~~~
+
+---
+
+## 16. Changing ENUM Values — High Level
+
+PostgreSQL lets you evolve ENUM types, for example by adding values.
+
+~~~sql
+ALTER TYPE order_status
+ADD VALUE 'refunded';
+~~~
+
+But schema evolution around ENUMs can be less flexible than updating rows in a lookup table.
+
+This is one reason you should reserve ENUM for genuinely stable domains.
+
+---
+
+## 17. What Are Custom Types?
+
+PostgreSQL lets you define your own types.
+
+ENUM itself is one type of user-defined type.
+
+Another useful concept is a **composite type**.
+
+Example:
+
+~~~sql
+CREATE TYPE address AS (
+    street TEXT,
+    city TEXT,
+    postal_code TEXT
+);
+~~~
+
+Now `address` represents a structured value.
+
+Conceptually:
+
+~~~text
+address
+ ├── street
+ ├── city
+ └── postal_code
+~~~
+
+PostgreSQL's type system is powerful, but custom composite types are not something you need for every application table.
+
+Often, normal tables and columns remain simpler.
+
+---
+
+## 18. Composite Type vs Table
+
+A composite type describes a structured **value**.
+
+A table represents stored **entities/rows** and can have:
+
+~~~text
+primary keys
+foreign keys
+indexes
+constraints
+relationships
+independent lifecycle
+~~~
+
+So do not use a composite type simply to avoid creating a table.
+
+Example:
+
+~~~text
+Customer address snapshot inside another value
+→ composite type may sometimes fit
+
+Addresses as independently managed entities
+→ table may be more appropriate
+~~~
+
+The correct choice depends on the data model.
+
+---
+
+## 19. DOMAIN — Reusable Constrained Type
+
+Another PostgreSQL feature is a **domain**.
+
+A domain creates a reusable type based on an existing type plus rules.
+
+Example:
+
+~~~sql
+CREATE DOMAIN positive_money AS NUMERIC(12, 2)
+CHECK (VALUE >= 0);
+~~~
+
+Use it:
+
+~~~sql
+CREATE TABLE products (
+    id BIGINT PRIMARY KEY,
+    price positive_money NOT NULL
+);
+~~~
+
+Now the rule:
+
+~~~text
+value must be >= 0
+~~~
+
+is part of the reusable domain.
+
+---
+
+## 20. Why DOMAIN Can Be Useful
+
+Imagine many tables contain monetary values that follow the same rule.
+
+Without a domain:
+
+~~~sql
+price NUMERIC(12,2) CHECK (price >= 0)
+shipping NUMERIC(12,2) CHECK (shipping >= 0)
+fee NUMERIC(12,2) CHECK (fee >= 0)
+~~~
+
+A domain can centralize a reusable value rule.
+
+Mental model:
+
+~~~text
+Base PostgreSQL type
+        +
+reusable constraint
+        ↓
+DOMAIN
+~~~
+
+Do not create domains for every tiny validation rule. Use them when a reusable semantic data type genuinely improves the schema.
+
+---
+
+## 21. DOMAIN vs ENUM
+
+These solve different problems.
+
+~~~text
+ENUM
+→ value must be one of a named fixed set
+
+DOMAIN
+→ value is based on another type and must satisfy reusable rules
+~~~
+
+Example:
+
+~~~text
+order_status ENUM
+→ pending / paid / shipped / cancelled
+
+positive_money DOMAIN
+→ NUMERIC value >= 0
+~~~
+
+---
+
+## 22. ARRAY vs JSONB
+
+This is an important design decision.
+
+Suppose you need tags:
+
+~~~text
+gaming
+laptop
+featured
+~~~
+
+An array can be natural:
+
+~~~sql
+tags TEXT[]
+~~~
+
+But suppose each product has flexible structured attributes:
+
+~~~json
+{
+  "ram": "16GB",
+  "storage": "1TB",
+  "processor": "Intel i7"
+}
+~~~
+
+JSONB is more natural.
+
+~~~text
+ARRAY
+→ multiple values of the same type
+
+JSONB
+→ flexible key/value or nested structure
+~~~
+
+---
+
+## 23. ARRAY vs Separate Table
+
+Suppose users can have roles.
+
+You could store:
+
+~~~text
+roles = ['admin', 'editor']
+~~~
+
+But if roles have their own:
+
+~~~text
+id
+name
+permissions
+description
+created_at
+~~~
+
+then roles are entities.
+
+Use:
+
+~~~text
+users
+  │
+  ▼
+user_roles
+  ▲
+  │
+roles
+~~~
+
+Again:
+
+~~~text
+simple values
+→ ARRAY can fit
+
+real entities
+→ table
+~~~
+
+---
+
+## 24. ENUM vs JSONB
+
+These are usually solving completely different problems.
+
+~~~text
+ENUM
+→ one value from a fixed allowed set
+
+JSONB
+→ flexible structured document
+~~~
+
+Example:
+
+~~~sql
+status order_status
+~~~
+
+vs:
+
+~~~sql
+attributes JSONB
+~~~
+
+Do not use JSONB merely to avoid defining a simple stable status column.
+
+---
+
+## 25. The Most Important Decision Table
+
+~~~text
+Requirement                         Better starting choice
+--------------------------------------------------------------
+One normal scalar value             Normal column
+Several same-type simple values     ARRAY
+One value from stable fixed set     ENUM or CHECK
+Flexible nested attributes          JSONB
+Reusable constrained scalar type    DOMAIN
+Structured reusable value           Composite type
+Real entity / relationship          TABLE + PK/FK
+~~~
+
+This table is more important than memorizing every PostgreSQL function.
+
+---
+
+## 26. Practical ShopHub Example
+
+A product might use several PostgreSQL features together:
+
+~~~sql
+CREATE TYPE product_state AS ENUM (
+    'draft',
+    'active',
+    'archived'
+);
+
+CREATE TABLE products (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    category_id BIGINT NOT NULL REFERENCES categories(id),
+    name TEXT NOT NULL,
+    state product_state NOT NULL DEFAULT 'draft',
+    tags TEXT[] NOT NULL DEFAULT '{}',
+    attributes JSONB NOT NULL DEFAULT '{}'::jsonb,
+    price NUMERIC(12,2) NOT NULL CHECK (price >= 0)
+);
+~~~
+
+Meaning:
+
+~~~text
+category_id
+→ real relationship → foreign key
+
+state
+→ small stable set → ENUM
+
+tags
+→ simple same-type values → ARRAY
+
+attributes
+→ flexible structured metadata → JSONB
+
+price
+→ stable scalar → normal NUMERIC column
+~~~
+
+This is the kind of decision-making that matters in production database design.
+
+---
+
+## 27. Common Mistakes
+
+## Mistake 1 — Using Arrays for Real Relationships
+
+Bad:
+
+~~~text
+order.product_ids BIGINT[]
+~~~
+
+Better:
+
+~~~text
+order_items table
+~~~
+
+when products are real entities in a many-to-many relationship.
+
+## Mistake 2 — Using ENUM for Dynamic Business Data
+
+If admins constantly add and manage values, a lookup table may be easier to evolve.
+
+## Mistake 3 — Using JSONB for a Simple Fixed Status
+
+If status is just one stable value, a normal typed column with ENUM/CHECK is clearer.
+
+## Mistake 4 — Creating Custom Types Everywhere
+
+PostgreSQL supports powerful types, but simpler schemas are often easier to maintain.
+
+## Mistake 5 — Forgetting PostgreSQL Array Indexing
+
+PostgreSQL arrays normally start at index 1, unlike JavaScript arrays.
+
+## Mistake 6 — Assuming GIN Makes Every Array Query Fast
+
+Index usefulness depends on query operators, selectivity, table size, and planner decisions.
+
+---
+
+## Interview Revision
+
+## What is a PostgreSQL ARRAY?
+
+A column type that can store multiple values of the same underlying PostgreSQL type.
+
+## What index does a PostgreSQL array normally start from?
+
+Normally 1.
+
+## How can you check whether a value is in an array?
+
+One common approach is `value = ANY(array_column)`.
+
+## What is an ENUM?
+
+A user-defined PostgreSQL type containing a predefined set of named values.
+
+## ENUM vs CHECK?
+
+ENUM creates a dedicated type for a stable value set. CHECK keeps a normal column type and applies a constraint. Both can enforce allowed values and have different schema-evolution tradeoffs.
+
+## ENUM vs lookup table?
+
+Use ENUM for small stable predefined sets. A lookup table is often better when values are dynamic business data with their own attributes/lifecycle.
+
+## What is a DOMAIN?
+
+A reusable user-defined type based on an existing PostgreSQL type with optional constraints.
+
+## What is a composite type?
+
+A PostgreSQL user-defined structured value containing multiple named fields.
+
+## ARRAY vs JSONB?
+
+ARRAY is suited to multiple homogeneous values. JSONB is suited to flexible key/value and nested structures.
+
+## ARRAY vs table?
+
+Use arrays for simple values. Use tables when items are real entities or relationships requiring keys, constraints, attributes, and independent querying.
+
+---
+
+## Quick Revision
+
+~~~text
+ARRAY
+→ many same-type values
+
+ENUM
+→ one value from fixed named set
+
+DOMAIN
+→ reusable base type + rule
+
+COMPOSITE TYPE
+→ reusable structured value
+
+JSONB
+→ flexible nested/key-value data
+
+TABLE
+→ real entities and relationships
+~~~
+
+### Important Array Concepts
+
+~~~text
+PostgreSQL array index
+→ normally starts at 1
+
+ANY
+→ compare against array elements
+
+@>
+→ containment
+
+array_append
+→ add element
+
+array_remove
+→ remove matching element
+
+GIN
+→ common index option for supported array searches
+~~~
+
+### Most Important Design Rule
+
+~~~text
+Is it a simple collection?
+→ ARRAY may fit
+
+Is it a stable fixed choice?
+→ ENUM/CHECK may fit
+
+Is it flexible structured metadata?
+→ JSONB may fit
+
+Is it a real entity or relationship?
+→ TABLE + PK/FK
+~~~
+
+---
+
+## Key Takeaway
+> **PostgreSQL gives you ARRAY, ENUM, DOMAIN, composite types, JSONB, and relational tables for different modeling problems. The important skill is choosing the simplest type that correctly represents the meaning and lifecycle of the data.**
+
+---
+
+[← Previous: Lesson 16 — JSON & JSONB](./16-json-and-jsonb.md) | [Back to Roadmap](../README.md) | [Next: Lesson 18 — Views & Materialized Views →](./18-views-and-materialized-views.md)
