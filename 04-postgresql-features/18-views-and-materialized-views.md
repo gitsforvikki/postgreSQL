@@ -1,1 +1,886 @@
-# Lesson 18 — Views & Materialized Views\n\n## First Understand the Problem\n\nImagine your ShopHub admin dashboard repeatedly needs this query:\n\n~~~sql\nSELECT\n    u.id AS user_id,\n    u.name,\n    o.id AS order_id,\n    o.total,\n    o.status\nFROM users u\nJOIN orders o ON o.user_id = u.id\nWHERE o.status = 'paid';\n~~~\n\nIf many parts of the application need the same complex query, repeating it everywhere makes the code harder to maintain.\n\nPostgreSQL gives us **Views**.\n\nNow imagine another query calculates monthly sales across millions of order rows. Running that expensive calculation every time a dashboard opens may be slow.\n\nPostgreSQL also gives us **Materialized Views**.\n\n~~~text\nRepeated reusable query\n→ VIEW\n\nExpensive query whose result can be temporarily cached/stored\n→ MATERIALIZED VIEW\n~~~\n\n---\n\n# 1. What Is a View?\n\nA **View** is essentially a named/saved SQL query that you can query like a table.\n\nExample:\n\n~~~sql\nCREATE VIEW paid_orders AS\nSELECT\n    id,\n    user_id,\n    total,\n    created_at\nFROM orders\nWHERE status = 'paid';\n~~~\n\nNow instead of repeating the full query:\n\n~~~sql\nSELECT *\nFROM paid_orders;\n~~~\n\nMental model:\n\n~~~text\nVIEW\n  ↓\nsaved query definition\n  ↓\nunderlying tables\n  ↓\ncurrent result when queried\n~~~\n\nA normal view generally does **not** store a separate copy of the query result.\n\n---\n\n# 2. A View Is Not Another Copy of the Data\n\nSuppose:\n\n~~~text\norders table\npaid order count = 100\n~~~\n\nThen you insert another paid order.\n\nWhen you query the view again, it sees the underlying current data.\n\n~~~text\norders changed\n    ↓\nquery view\n    ↓\nview query runs against current tables\n    ↓\nnew result\n~~~\n\nYou do not normally need to refresh a standard view.\n\n---\n\n# 3. Why Use Views?\n\nViews can help with several things.\n\n### Reuse complex SQL\n\nInstead of repeating:\n\n~~~text\nJOIN\n +\nfilters\n +\ncalculated fields\n +\naggregation\n~~~\n\nyou can expose the logic through a named view.\n\n### Simplify application queries\n\nApplication:\n\n~~~sql\nSELECT * FROM customer_order_summary;\n~~~\n\ninstead of embedding a large query everywhere.\n\n### Provide abstraction\n\nApplications can depend on a useful database-facing shape rather than repeating the underlying join logic.\n\n### Security / access design\n\nPrivileges can be designed around views in some architectures so consumers interact with a restricted representation rather than directly with all base-table data.\n\nImportant: a view is **not automatically a security boundary just because it exists**. PostgreSQL permissions and the view's security behavior still need to be configured correctly.\n\n---\n\n# 4. View Example with JOIN\n\n~~~sql\nCREATE VIEW customer_orders AS\nSELECT\n    o.id AS order_id,\n    o.created_at,\n    o.status,\n    o.total,\n    u.id AS user_id,\n    u.name AS customer_name,\n    u.email AS customer_email\nFROM orders o\nJOIN users u ON u.id = o.user_id;\n~~~\n\nNow:\n\n~~~sql\nSELECT *\nFROM customer_orders\nWHERE user_id = 10;\n~~~\n\nConceptually:\n\n~~~text\nApplication\n    ↓\ncustomer_orders VIEW\n    ↓\norders JOIN users\n    ↓\nresult\n~~~\n\n---\n\n# 5. Views Can Hide Complexity\n\nSuppose calculating order totals requires:\n\n~~~text\norders\n   +\norder_items\n   +\nproducts\n   +\naggregations\n~~~\n\nA view can package that SQL behind a meaningful database object.\n\nThis does not magically make the underlying query faster. It primarily improves **reuse and abstraction**.\n\nThat distinction is important.\n\n~~~text\nVIEW\n→ cleaner/reusable query interface\n≠\nautomatic performance optimization\n~~~\n\n---\n\n# 6. Can You INSERT or UPDATE Through a View?\n\nSome simple PostgreSQL views are automatically updatable.\n\nFor example, a straightforward view over one table may allow writes when PostgreSQL can map the operation back to the underlying table.\n\nBut complex views involving things such as joins, aggregates, grouping, or certain expressions may not be automatically updatable.\n\nFor learning purposes, think:\n\n~~~text\nSimple view\n→ may be automatically updatable\n\nComplex analytical/join view\n→ usually use mainly for reading\n~~~\n\nDo not assume every view accepts INSERT/UPDATE/DELETE.\n\n---\n\n# 7. WITH CHECK OPTION\n\nSuppose a view exposes only active products:\n\n~~~sql\nCREATE VIEW active_products AS\nSELECT id, name, price, is_active\nFROM products\nWHERE is_active = true\nWITH CHECK OPTION;\n~~~\n\nIf the view is updatable, `WITH CHECK OPTION` helps ensure writes made through the view continue to satisfy its condition.\n\nMental model:\n\n~~~text\nactive_products view\n        ↓\nwrite through view\n        ↓\ndoes resulting row still satisfy is_active = true?\n        ↓\nyes → allowed\nno  → rejected\n~~~\n\nThis matters when using an updatable view as a controlled interface.\n\n---\n\n# 8. What Is a Materialized View?\n\nA **Materialized View** stores the result of a query physically.\n\nExample:\n\n~~~sql\nCREATE MATERIALIZED VIEW monthly_sales AS\nSELECT\n    date_trunc('month', created_at) AS month,\n    SUM(total) AS revenue,\n    COUNT(*) AS total_orders\nFROM orders\nWHERE status = 'paid'\nGROUP BY date_trunc('month', created_at);\n~~~\n\nNow PostgreSQL stores the calculated result.\n\n~~~text\norders\n   ↓\nexpensive aggregation\n   ↓\nMATERIALIZED VIEW\n   ↓\nstored result\n~~~\n\nWhen queried, PostgreSQL can read that stored result instead of recalculating the entire underlying query each time.\n\n---\n\n# 9. View vs Materialized View — Most Important Difference\n\n~~~text\nVIEW\n→ stores query definition\n→ normally reads current underlying data\n→ query work happens when view is queried\n\nMATERIALIZED VIEW\n→ stores query result physically\n→ reads can be much cheaper for expensive calculations\n→ result can become stale\n→ needs refresh\n~~~\n\nEasy memory:\n\n~~~text\nVIEW = saved query\n\nMATERIALIZED VIEW = saved result of query\n~~~\n\n---\n\n# 10. The Stale Data Problem\n\nSuppose the materialized view says:\n\n~~~text\nOctober revenue = ₹500,000\n~~~\n\nThen new paid orders are inserted.\n\nThe base `orders` table changes, but the materialized view does not automatically become current just because the table changed.\n\n~~~text\norders updated\n     ↓\nmaterialized view still contains old result\n     ↓\nSTALE DATA\n~~~\n\nTo update it, refresh the materialized view.\n\n---\n\n# 11. REFRESH MATERIALIZED VIEW\n\n~~~sql\nREFRESH MATERIALIZED VIEW monthly_sales;\n~~~\n\nFlow:\n\n~~~text\nBase tables changed\n      ↓\nREFRESH\n      ↓\nquery recalculated\n      ↓\nstored result replaced\n      ↓\nmaterialized view current again\n~~~\n\nThe application or an operational job decides when refreshing should happen.\n\nExamples:\n\n~~~text\nevery 5 minutes\nhourly\nnightly\nafter a data pipeline\non demand\n~~~\n\nThe correct refresh schedule depends on how fresh the data must be.\n\n---\n\n# 12. Normal Refresh and Read Availability\n\nA regular materialized-view refresh can block concurrent reads of that materialized view while the refresh is occurring.\n\nFor reporting systems where users should continue reading the old result during refresh, PostgreSQL provides another option.\n\n---\n\n# 13. REFRESH MATERIALIZED VIEW CONCURRENTLY\n\n~~~sql\nREFRESH MATERIALIZED VIEW CONCURRENTLY monthly_sales;\n~~~\n\nHigh-level idea:\n\n~~~text\nOld materialized result\n      ↓\nreaders can continue using it\n      ↓\nPostgreSQL refreshes\n      ↓\nnew result becomes available\n~~~\n\nThis reduces disruption for readers, but it has requirements.\n\nOne important requirement is that the materialized view has a suitable **UNIQUE index** satisfying PostgreSQL's requirements for concurrent refresh.\n\nExample:\n\n~~~sql\nCREATE UNIQUE INDEX idx_monthly_sales_month\nON monthly_sales (month);\n~~~\n\nThen concurrent refresh can be used when the materialized view and index meet the required conditions.\n\nInterview memory:\n\n~~~text\nREFRESH MATERIALIZED VIEW\n→ refresh stored result\n\nREFRESH ... CONCURRENTLY\n→ allow concurrent reads during refresh\n→ requires suitable UNIQUE index\n~~~\n\n---\n\n# 14. Materialized Views Can Have Indexes\n\nBecause a materialized view stores rows physically, you can create indexes on it.\n\nExample:\n\n~~~sql\nCREATE INDEX idx_monthly_sales_revenue\nON monthly_sales (revenue);\n~~~\n\nThis can make querying the stored result efficient for relevant access patterns.\n\nNormal views do not store their own result rows, so you normally optimize the underlying tables/query instead.\n\n---\n\n# 15. When Should You Use a Normal View?\n\nGood cases:\n\n~~~text\nReusable joins\nReusable filtering\nConsistent query abstraction\nSimplifying application SQL\nControlled representation of data\n~~~\n\nExample:\n\n~~~text\nCustomer's current order details\n~~~\n\nwhere you want current data whenever the page loads.\n\n---\n\n# 16. When Should You Use a Materialized View?\n\nGood cases:\n\n~~~text\nExpensive aggregation\nAnalytics dashboards\nReporting\nLarge repeated joins\nSummary data\nRead-heavy calculations\nData that can tolerate some staleness\n~~~\n\nExample:\n\n~~~text\nMonthly revenue dashboard\nTop-selling products report\nDaily sales summary\n~~~\n\nInstead of recalculating millions of rows on every request:\n\n~~~text\ncalculate periodically\n       ↓\nstore result\n       ↓\ndashboard reads small result\n~~~\n\n---\n\n# 17. Materialized View Is a Tradeoff\n\nYou gain faster repeated reads for expensive calculations, but pay for:\n\n~~~text\nstorage\nrefresh work\nrefresh scheduling\npotential stale data\n~~~\n\nSo the real decision is:\n\n> Is it acceptable for this data to be slightly old in exchange for cheaper/faster reads?\n\nIf the answer is no, a materialized view may not be appropriate for that requirement.\n\n---\n\n# 18. View vs CTE\n\nYou learned CTEs in Lesson 9.\n\nBoth can make SQL easier to understand, but their lifetime differs.\n\n~~~text\nCTE\n→ named result/query component inside one SQL statement\n→ exists only for that statement\n\nVIEW\n→ persistent database object\n→ reusable across many statements\n~~~\n\nExample CTE:\n\n~~~sql\nWITH paid_orders AS (\n    SELECT *\n    FROM orders\n    WHERE status = 'paid'\n)\nSELECT *\nFROM paid_orders;\n~~~\n\nExample view:\n\n~~~sql\nCREATE VIEW paid_orders AS\nSELECT *\nFROM orders\nWHERE status = 'paid';\n~~~\n\nUse a CTE for structuring one query. Use a view when a query abstraction should be reusable as a database object.\n\n---\n\n# 19. View vs Temporary Table\n\nA temporary table is different again.\n\n~~~text\nVIEW\n→ persistent query definition\n→ normally no stored result\n\nTEMP TABLE\n→ temporary physical table/data\n→ normally exists for the database session/transaction depending on configuration\n\nMATERIALIZED VIEW\n→ persistent database object\n→ physically stored query result\n~~~\n\nThese solve different problems.\n\n---\n\n# 20. ShopHub Example — Current Order View\n\nSuppose ShopHub frequently needs current order information with customer details.\n\n~~~sql\nCREATE VIEW order_details AS\nSELECT\n    o.id AS order_id,\n    o.status,\n    o.total,\n    o.created_at,\n    u.id AS user_id,\n    u.name AS customer_name,\n    u.email AS customer_email\nFROM orders o\nJOIN users u ON u.id = o.user_id;\n~~~\n\nApplication:\n\n~~~sql\nSELECT *\nFROM order_details\nWHERE order_id = 101;\n~~~\n\nWhy a normal view?\n\n~~~text\nOrder page\n→ should reflect current data\n→ query is reusable\n→ normal VIEW fits\n~~~\n\n---\n\n# 21. ShopHub Example — Monthly Revenue\n\nSuppose an admin dashboard repeatedly calculates years of revenue.\n\n~~~sql\nCREATE MATERIALIZED VIEW monthly_revenue AS\nSELECT\n    date_trunc('month', created_at) AS month,\n    COUNT(*) AS orders_count,\n    SUM(total) AS revenue\nFROM orders\nWHERE status = 'paid'\nGROUP BY date_trunc('month', created_at);\n~~~\n\nDashboard query:\n\n~~~sql\nSELECT *\nFROM monthly_revenue\nORDER BY month DESC;\n~~~\n\nInstead of repeatedly scanning and aggregating the full orders dataset, the dashboard can read the precomputed result.\n\nRefresh based on freshness requirements.\n\n~~~text\nOrders\n  ↓\nexpensive aggregation during refresh\n  ↓\nmonthly_revenue materialized view\n  ↓\nfast dashboard reads\n~~~\n\n---\n\n# 22. Security and Views\n\nViews can be part of a database security design, but simply creating a view does not secure the underlying system.\n\nYou still need to understand:\n\n~~~text\nGRANT\nREVOKE\nroles\nownership\nschema privileges\nview security behavior\n~~~\n\nExample architecture:\n\n~~~text\nApplication role\n      ↓\npermission to query selected view\n      ↓\nrestricted representation\n~~~\n\nPostgreSQL security is covered deeply in Lesson 35.\n\nImportant interview point:\n\n> A view can help expose a restricted representation, but permissions must still be configured correctly.\n\n---\n\n# 23. Do Views Improve Performance?\n\nA normal view does **not automatically make a query faster**.\n\nPostgreSQL plans the query using the view definition and underlying relations.\n\nIf the underlying query is expensive, wrapping it in a normal view does not magically remove that work.\n\n~~~text\nComplex query\n    ↓\nput into normal view\n    ↓\nstill fundamentally complex work\n~~~\n\nA materialized view is different because it stores the result.\n\n~~~text\nExpensive query\n    ↓\nprecompute/store result\n    ↓\ncheap repeated reads\n~~~\n\n---\n\n# 24. Common Mistakes\n\n## Mistake 1 — Thinking a View Stores Data\n\nA normal view primarily stores the query definition, not a separate result copy.\n\n## Mistake 2 — Thinking Materialized Views Are Always Current\n\nThey can become stale and require refresh.\n\n## Mistake 3 — Thinking Views Automatically Improve Performance\n\nA normal view mainly provides reuse and abstraction.\n\n## Mistake 4 — Using Materialized Views for Data That Must Be Real-Time\n\nIf every read must reflect the latest committed base-table data, stale snapshots may be unacceptable.\n\n## Mistake 5 — Forgetting Refresh Strategy\n\nCreating a materialized view without deciding when/how to refresh it can produce misleading reports.\n\n## Mistake 6 — Assuming Every View Is Updatable\n\nSimple views may be automatically updatable; complex views often are not.\n\n## Mistake 7 — Treating a View as Automatic Security\n\nSecurity still requires correct roles and privileges.\n\n---\n\n# Interview Revision\n\n## What is a View?\n\nA persistent database object representing a saved query that can be queried similarly to a table.\n\n## Does a normal View store its query result?\n\nGenerally no. It stores the query definition and reads from the underlying data when queried.\n\n## Does a View show current data?\n\nNormally yes, because its query runs against the current underlying tables.\n\n## What is a Materialized View?\n\nA database object that physically stores the result of a query.\n\n## Main difference?\n\n~~~text\nVIEW\n→ saved query definition\n→ current underlying data\n\nMATERIALIZED VIEW\n→ stored query result\n→ may be stale\n~~~\n\n## How do you update a Materialized View?\n\n~~~sql\nREFRESH MATERIALIZED VIEW view_name;\n~~~\n\n## What is concurrent refresh?\n\n`REFRESH MATERIALIZED VIEW CONCURRENTLY` refreshes while allowing concurrent reads, subject to PostgreSQL requirements including a suitable unique index.\n\n## Can a Materialized View have indexes?\n\nYes.\n\n## Can a normal View have its own ordinary index?\n\nA normal view does not store its own rows, so indexes are normally created on the underlying tables rather than on the view itself.\n\n## View vs CTE?\n\nA CTE exists within one statement. A view is a reusable persistent database object.\n\n## View vs Materialized View for an analytics dashboard?\n\nIf the calculation is expensive and slightly stale data is acceptable, a materialized view can be a strong option.\n\n## Does a View automatically improve performance?\n\nNo.\n\n---\n\n# Quick Revision\n\n~~~text\nVIEW\n→ saved query\n→ current data\n→ no manual refresh\n→ reusable abstraction\n\nMATERIALIZED VIEW\n→ saved query result\n→ physically stored\n→ can become stale\n→ requires refresh\n→ can have indexes\n~~~\n\n### Refresh Flow\n\n~~~text\nBase tables change\n      ↓\nMaterialized view becomes stale\n      ↓\nREFRESH\n      ↓\nStored result updated\n~~~\n\n### Practical Choice\n\n~~~text\nCurrent reusable application data\n→ VIEW\n\nExpensive repeated analytics\n +\nstale data acceptable\n→ MATERIALIZED VIEW\n~~~\n\n### Related Concepts\n\n~~~text\nCTE\n→ one statement\n\nVIEW\n→ persistent saved query\n\nTEMP TABLE\n→ temporary stored table\n\nMATERIALIZED VIEW\n→ persistent stored query result\n~~~\n\n---\n\n## Key Takeaway\n> **A normal View gives a reusable query over current underlying data, while a Materialized View stores a precomputed result for faster repeated reads at the cost of refresh work and potentially stale data.**\n\n---\n\n[← Previous: Lesson 17 — Arrays, ENUMs & Custom Types](./17-arrays-enums-custom-types.md) | [Back to Roadmap](../README.md) | [Next: Lesson 19 — Functions, Procedures & Triggers →](./19-functions-procedures-triggers.md)
+# Lesson 18 — Views & Materialized Views
+
+## First Understand the Problem
+
+Imagine your ShopHub admin dashboard repeatedly needs this query:
+
+~~~sql
+SELECT
+    u.id AS user_id,
+    u.name,
+    o.id AS order_id,
+    o.total,
+    o.status
+FROM users u
+JOIN orders o ON o.user_id = u.id
+WHERE o.status = 'paid';
+~~~
+
+If many parts of the application need the same complex query, repeating it everywhere makes the code harder to maintain.
+
+PostgreSQL gives us **Views**.
+
+Now imagine another query calculates monthly sales across millions of order rows. Running that expensive calculation every time a dashboard opens may be slow.
+
+PostgreSQL also gives us **Materialized Views**.
+
+~~~text
+Repeated reusable query
+→ VIEW
+
+Expensive query whose result can be temporarily cached/stored
+→ MATERIALIZED VIEW
+~~~
+
+---
+
+## 1. What Is a View?
+
+A **View** is essentially a named/saved SQL query that you can query like a table.
+
+Example:
+
+~~~sql
+CREATE VIEW paid_orders AS
+SELECT
+    id,
+    user_id,
+    total,
+    created_at
+FROM orders
+WHERE status = 'paid';
+~~~
+
+Now instead of repeating the full query:
+
+~~~sql
+SELECT *
+FROM paid_orders;
+~~~
+
+Mental model:
+
+~~~text
+VIEW
+  ↓
+saved query definition
+  ↓
+underlying tables
+  ↓
+current result when queried
+~~~
+
+A normal view generally does **not** store a separate copy of the query result.
+
+---
+
+## 2. A View Is Not Another Copy of the Data
+
+Suppose:
+
+~~~text
+orders table
+paid order count = 100
+~~~
+
+Then you insert another paid order.
+
+When you query the view again, it sees the underlying current data.
+
+~~~text
+orders changed
+    ↓
+query view
+    ↓
+view query runs against current tables
+    ↓
+new result
+~~~
+
+You do not normally need to refresh a standard view.
+
+---
+
+## 3. Why Use Views?
+
+Views can help with several things.
+
+### Reuse complex SQL
+
+Instead of repeating:
+
+~~~text
+JOIN
+ +
+filters
+ +
+calculated fields
+ +
+aggregation
+~~~
+
+you can expose the logic through a named view.
+
+### Simplify application queries
+
+Application:
+
+~~~sql
+SELECT * FROM customer_order_summary;
+~~~
+
+instead of embedding a large query everywhere.
+
+### Provide abstraction
+
+Applications can depend on a useful database-facing shape rather than repeating the underlying join logic.
+
+### Security / access design
+
+Privileges can be designed around views in some architectures so consumers interact with a restricted representation rather than directly with all base-table data.
+
+Important: a view is **not automatically a security boundary just because it exists**. PostgreSQL permissions and the view's security behavior still need to be configured correctly.
+
+---
+
+## 4. View Example with JOIN
+
+~~~sql
+CREATE VIEW customer_orders AS
+SELECT
+    o.id AS order_id,
+    o.created_at,
+    o.status,
+    o.total,
+    u.id AS user_id,
+    u.name AS customer_name,
+    u.email AS customer_email
+FROM orders o
+JOIN users u ON u.id = o.user_id;
+~~~
+
+Now:
+
+~~~sql
+SELECT *
+FROM customer_orders
+WHERE user_id = 10;
+~~~
+
+Conceptually:
+
+~~~text
+Application
+    ↓
+customer_orders VIEW
+    ↓
+orders JOIN users
+    ↓
+result
+~~~
+
+---
+
+## 5. Views Can Hide Complexity
+
+Suppose calculating order totals requires:
+
+~~~text
+orders
+   +
+order_items
+   +
+products
+   +
+aggregations
+~~~
+
+A view can package that SQL behind a meaningful database object.
+
+This does not magically make the underlying query faster. It primarily improves **reuse and abstraction**.
+
+That distinction is important.
+
+~~~text
+VIEW
+→ cleaner/reusable query interface
+≠
+automatic performance optimization
+~~~
+
+---
+
+## 6. Can You INSERT or UPDATE Through a View?
+
+Some simple PostgreSQL views are automatically updatable.
+
+For example, a straightforward view over one table may allow writes when PostgreSQL can map the operation back to the underlying table.
+
+But complex views involving things such as joins, aggregates, grouping, or certain expressions may not be automatically updatable.
+
+For learning purposes, think:
+
+~~~text
+Simple view
+→ may be automatically updatable
+
+Complex analytical/join view
+→ usually use mainly for reading
+~~~
+
+Do not assume every view accepts INSERT/UPDATE/DELETE.
+
+---
+
+## 7. WITH CHECK OPTION
+
+Suppose a view exposes only active products:
+
+~~~sql
+CREATE VIEW active_products AS
+SELECT id, name, price, is_active
+FROM products
+WHERE is_active = true
+WITH CHECK OPTION;
+~~~
+
+If the view is updatable, `WITH CHECK OPTION` helps ensure writes made through the view continue to satisfy its condition.
+
+Mental model:
+
+~~~text
+active_products view
+        ↓
+write through view
+        ↓
+does resulting row still satisfy is_active = true?
+        ↓
+yes → allowed
+no  → rejected
+~~~
+
+This matters when using an updatable view as a controlled interface.
+
+---
+
+## 8. What Is a Materialized View?
+
+A **Materialized View** stores the result of a query physically.
+
+Example:
+
+~~~sql
+CREATE MATERIALIZED VIEW monthly_sales AS
+SELECT
+    date_trunc('month', created_at) AS month,
+    SUM(total) AS revenue,
+    COUNT(*) AS total_orders
+FROM orders
+WHERE status = 'paid'
+GROUP BY date_trunc('month', created_at);
+~~~
+
+Now PostgreSQL stores the calculated result.
+
+~~~text
+orders
+   ↓
+expensive aggregation
+   ↓
+MATERIALIZED VIEW
+   ↓
+stored result
+~~~
+
+When queried, PostgreSQL can read that stored result instead of recalculating the entire underlying query each time.
+
+---
+
+## 9. View vs Materialized View — Most Important Difference
+
+~~~text
+VIEW
+→ stores query definition
+→ normally reads current underlying data
+→ query work happens when view is queried
+
+MATERIALIZED VIEW
+→ stores query result physically
+→ reads can be much cheaper for expensive calculations
+→ result can become stale
+→ needs refresh
+~~~
+
+Easy memory:
+
+~~~text
+VIEW = saved query
+
+MATERIALIZED VIEW = saved result of query
+~~~
+
+---
+
+## 10. The Stale Data Problem
+
+Suppose the materialized view says:
+
+~~~text
+October revenue = ₹500,000
+~~~
+
+Then new paid orders are inserted.
+
+The base `orders` table changes, but the materialized view does not automatically become current just because the table changed.
+
+~~~text
+orders updated
+     ↓
+materialized view still contains old result
+     ↓
+STALE DATA
+~~~
+
+To update it, refresh the materialized view.
+
+---
+
+## 11. REFRESH MATERIALIZED VIEW
+
+~~~sql
+REFRESH MATERIALIZED VIEW monthly_sales;
+~~~
+
+Flow:
+
+~~~text
+Base tables changed
+      ↓
+REFRESH
+      ↓
+query recalculated
+      ↓
+stored result replaced
+      ↓
+materialized view current again
+~~~
+
+The application or an operational job decides when refreshing should happen.
+
+Examples:
+
+~~~text
+every 5 minutes
+hourly
+nightly
+after a data pipeline
+on demand
+~~~
+
+The correct refresh schedule depends on how fresh the data must be.
+
+---
+
+## 12. Normal Refresh and Read Availability
+
+A regular materialized-view refresh can block concurrent reads of that materialized view while the refresh is occurring.
+
+For reporting systems where users should continue reading the old result during refresh, PostgreSQL provides another option.
+
+---
+
+## 13. REFRESH MATERIALIZED VIEW CONCURRENTLY
+
+~~~sql
+REFRESH MATERIALIZED VIEW CONCURRENTLY monthly_sales;
+~~~
+
+High-level idea:
+
+~~~text
+Old materialized result
+      ↓
+readers can continue using it
+      ↓
+PostgreSQL refreshes
+      ↓
+new result becomes available
+~~~
+
+This reduces disruption for readers, but it has requirements.
+
+One important requirement is that the materialized view has a suitable **UNIQUE index** satisfying PostgreSQL's requirements for concurrent refresh.
+
+Example:
+
+~~~sql
+CREATE UNIQUE INDEX idx_monthly_sales_month
+ON monthly_sales (month);
+~~~
+
+Then concurrent refresh can be used when the materialized view and index meet the required conditions.
+
+Interview memory:
+
+~~~text
+REFRESH MATERIALIZED VIEW
+→ refresh stored result
+
+REFRESH ... CONCURRENTLY
+→ allow concurrent reads during refresh
+→ requires suitable UNIQUE index
+~~~
+
+---
+
+## 14. Materialized Views Can Have Indexes
+
+Because a materialized view stores rows physically, you can create indexes on it.
+
+Example:
+
+~~~sql
+CREATE INDEX idx_monthly_sales_revenue
+ON monthly_sales (revenue);
+~~~
+
+This can make querying the stored result efficient for relevant access patterns.
+
+Normal views do not store their own result rows, so you normally optimize the underlying tables/query instead.
+
+---
+
+## 15. When Should You Use a Normal View?
+
+Good cases:
+
+~~~text
+Reusable joins
+Reusable filtering
+Consistent query abstraction
+Simplifying application SQL
+Controlled representation of data
+~~~
+
+Example:
+
+~~~text
+Customer's current order details
+~~~
+
+where you want current data whenever the page loads.
+
+---
+
+## 16. When Should You Use a Materialized View?
+
+Good cases:
+
+~~~text
+Expensive aggregation
+Analytics dashboards
+Reporting
+Large repeated joins
+Summary data
+Read-heavy calculations
+Data that can tolerate some staleness
+~~~
+
+Example:
+
+~~~text
+Monthly revenue dashboard
+Top-selling products report
+Daily sales summary
+~~~
+
+Instead of recalculating millions of rows on every request:
+
+~~~text
+calculate periodically
+       ↓
+store result
+       ↓
+dashboard reads small result
+~~~
+
+---
+
+## 17. Materialized View Is a Tradeoff
+
+You gain faster repeated reads for expensive calculations, but pay for:
+
+~~~text
+storage
+refresh work
+refresh scheduling
+potential stale data
+~~~
+
+So the real decision is:
+
+> Is it acceptable for this data to be slightly old in exchange for cheaper/faster reads?
+
+If the answer is no, a materialized view may not be appropriate for that requirement.
+
+---
+
+## 18. View vs CTE
+
+You learned CTEs in Lesson 9.
+
+Both can make SQL easier to understand, but their lifetime differs.
+
+~~~text
+CTE
+→ named result/query component inside one SQL statement
+→ exists only for that statement
+
+VIEW
+→ persistent database object
+→ reusable across many statements
+~~~
+
+Example CTE:
+
+~~~sql
+WITH paid_orders AS (
+    SELECT *
+    FROM orders
+    WHERE status = 'paid'
+)
+SELECT *
+FROM paid_orders;
+~~~
+
+Example view:
+
+~~~sql
+CREATE VIEW paid_orders AS
+SELECT *
+FROM orders
+WHERE status = 'paid';
+~~~
+
+Use a CTE for structuring one query. Use a view when a query abstraction should be reusable as a database object.
+
+---
+
+## 19. View vs Temporary Table
+
+A temporary table is different again.
+
+~~~text
+VIEW
+→ persistent query definition
+→ normally no stored result
+
+TEMP TABLE
+→ temporary physical table/data
+→ normally exists for the database session/transaction depending on configuration
+
+MATERIALIZED VIEW
+→ persistent database object
+→ physically stored query result
+~~~
+
+These solve different problems.
+
+---
+
+## 20. ShopHub Example — Current Order View
+
+Suppose ShopHub frequently needs current order information with customer details.
+
+~~~sql
+CREATE VIEW order_details AS
+SELECT
+    o.id AS order_id,
+    o.status,
+    o.total,
+    o.created_at,
+    u.id AS user_id,
+    u.name AS customer_name,
+    u.email AS customer_email
+FROM orders o
+JOIN users u ON u.id = o.user_id;
+~~~
+
+Application:
+
+~~~sql
+SELECT *
+FROM order_details
+WHERE order_id = 101;
+~~~
+
+Why a normal view?
+
+~~~text
+Order page
+→ should reflect current data
+→ query is reusable
+→ normal VIEW fits
+~~~
+
+---
+
+## 21. ShopHub Example — Monthly Revenue
+
+Suppose an admin dashboard repeatedly calculates years of revenue.
+
+~~~sql
+CREATE MATERIALIZED VIEW monthly_revenue AS
+SELECT
+    date_trunc('month', created_at) AS month,
+    COUNT(*) AS orders_count,
+    SUM(total) AS revenue
+FROM orders
+WHERE status = 'paid'
+GROUP BY date_trunc('month', created_at);
+~~~
+
+Dashboard query:
+
+~~~sql
+SELECT *
+FROM monthly_revenue
+ORDER BY month DESC;
+~~~
+
+Instead of repeatedly scanning and aggregating the full orders dataset, the dashboard can read the precomputed result.
+
+Refresh based on freshness requirements.
+
+~~~text
+Orders
+  ↓
+expensive aggregation during refresh
+  ↓
+monthly_revenue materialized view
+  ↓
+fast dashboard reads
+~~~
+
+---
+
+## 22. Security and Views
+
+Views can be part of a database security design, but simply creating a view does not secure the underlying system.
+
+You still need to understand:
+
+~~~text
+GRANT
+REVOKE
+roles
+ownership
+schema privileges
+view security behavior
+~~~
+
+Example architecture:
+
+~~~text
+Application role
+      ↓
+permission to query selected view
+      ↓
+restricted representation
+~~~
+
+PostgreSQL security is covered deeply in Lesson 35.
+
+Important interview point:
+
+> A view can help expose a restricted representation, but permissions must still be configured correctly.
+
+---
+
+## 23. Do Views Improve Performance?
+
+A normal view does **not automatically make a query faster**.
+
+PostgreSQL plans the query using the view definition and underlying relations.
+
+If the underlying query is expensive, wrapping it in a normal view does not magically remove that work.
+
+~~~text
+Complex query
+    ↓
+put into normal view
+    ↓
+still fundamentally complex work
+~~~
+
+A materialized view is different because it stores the result.
+
+~~~text
+Expensive query
+    ↓
+precompute/store result
+    ↓
+cheap repeated reads
+~~~
+
+---
+
+## 24. Common Mistakes
+
+## Mistake 1 — Thinking a View Stores Data
+
+A normal view primarily stores the query definition, not a separate result copy.
+
+## Mistake 2 — Thinking Materialized Views Are Always Current
+
+They can become stale and require refresh.
+
+## Mistake 3 — Thinking Views Automatically Improve Performance
+
+A normal view mainly provides reuse and abstraction.
+
+## Mistake 4 — Using Materialized Views for Data That Must Be Real-Time
+
+If every read must reflect the latest committed base-table data, stale snapshots may be unacceptable.
+
+## Mistake 5 — Forgetting Refresh Strategy
+
+Creating a materialized view without deciding when/how to refresh it can produce misleading reports.
+
+## Mistake 6 — Assuming Every View Is Updatable
+
+Simple views may be automatically updatable; complex views often are not.
+
+## Mistake 7 — Treating a View as Automatic Security
+
+Security still requires correct roles and privileges.
+
+---
+
+## Interview Revision
+
+## What is a View?
+
+A persistent database object representing a saved query that can be queried similarly to a table.
+
+## Does a normal View store its query result?
+
+Generally no. It stores the query definition and reads from the underlying data when queried.
+
+## Does a View show current data?
+
+Normally yes, because its query runs against the current underlying tables.
+
+## What is a Materialized View?
+
+A database object that physically stores the result of a query.
+
+## Main difference?
+
+~~~text
+VIEW
+→ saved query definition
+→ current underlying data
+
+MATERIALIZED VIEW
+→ stored query result
+→ may be stale
+~~~
+
+## How do you update a Materialized View?
+
+~~~sql
+REFRESH MATERIALIZED VIEW view_name;
+~~~
+
+## What is concurrent refresh?
+
+`REFRESH MATERIALIZED VIEW CONCURRENTLY` refreshes while allowing concurrent reads, subject to PostgreSQL requirements including a suitable unique index.
+
+## Can a Materialized View have indexes?
+
+Yes.
+
+## Can a normal View have its own ordinary index?
+
+A normal view does not store its own rows, so indexes are normally created on the underlying tables rather than on the view itself.
+
+## View vs CTE?
+
+A CTE exists within one statement. A view is a reusable persistent database object.
+
+## View vs Materialized View for an analytics dashboard?
+
+If the calculation is expensive and slightly stale data is acceptable, a materialized view can be a strong option.
+
+## Does a View automatically improve performance?
+
+No.
+
+---
+
+## Quick Revision
+
+~~~text
+VIEW
+→ saved query
+→ current data
+→ no manual refresh
+→ reusable abstraction
+
+MATERIALIZED VIEW
+→ saved query result
+→ physically stored
+→ can become stale
+→ requires refresh
+→ can have indexes
+~~~
+
+### Refresh Flow
+
+~~~text
+Base tables change
+      ↓
+Materialized view becomes stale
+      ↓
+REFRESH
+      ↓
+Stored result updated
+~~~
+
+### Practical Choice
+
+~~~text
+Current reusable application data
+→ VIEW
+
+Expensive repeated analytics
+ +
+stale data acceptable
+→ MATERIALIZED VIEW
+~~~
+
+### Related Concepts
+
+~~~text
+CTE
+→ one statement
+
+VIEW
+→ persistent saved query
+
+TEMP TABLE
+→ temporary stored table
+
+MATERIALIZED VIEW
+→ persistent stored query result
+~~~
+
+---
+
+## Key Takeaway
+> **A normal View gives a reusable query over current underlying data, while a Materialized View stores a precomputed result for faster repeated reads at the cost of refresh work and potentially stale data.**
+
+---
+
+[← Previous: Lesson 17 — Arrays, ENUMs & Custom Types](./17-arrays-enums-custom-types.md) | [Back to Roadmap](../README.md) | [Next: Lesson 19 — Functions, Procedures & Triggers →](./19-functions-procedures-triggers.md)
